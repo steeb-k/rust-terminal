@@ -1,0 +1,8 @@
+# Statically link the MSVC C runtime so rust-terminal.exe carries no
+# vcruntime140.dll / ucrtbase.dll dependency. In WinPE the VC redist isn't
+# present, so a dynamic CRT dependency would make the binary fail to start.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

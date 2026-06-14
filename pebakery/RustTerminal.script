@@ -1,0 +1,123 @@
+[License]
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// RustTerminal PEBakery integration script.
+// Distributed under the GPL-3.0-or-later license, like RustTerminal itself.
+// Modeled on the StartPE / PhoenixPE script structure (c) Jonathan Holmgren
+// (Homes32, MIT) so it can sit alongside existing PhoenixPE/winrx-creator scripts.
+//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+[Main]
+Title=RustTerminal
+Description=A free, open source (GPLv3) GDI terminal emulator for Windows PE. ConPTY-backed, no DWM/DirectX required. Companion to StartPE.
+Author=steeb-k
+Level=3
+Selected=True
+Mandatory=False
+Version=0.1.0.0
+Date=2026-06-14
+
+[Variables]
+%ProgramFolder%=RustTerminal
+%BinaryX64%=rust-terminal.exe
+%BinaryA64%=rust-terminal-arm64.exe
+// Base URL for release builds; the arch-specific binary name is appended.
+%DownloadURL%=https://github.com/steeb-k/rust-terminal/releases/latest/download/
+
+[Process]
+Echo,"Configuring [ RustTerminal ]..."
+
+RunFromRam
+
+If,%cb_AlwaysDownload%,Equal,True,DirDeleteEx,"%ProgramsCache%\%ProgramFolder%"
+
+// ---------------------------------------------------------------------------
+// Stage the binary. Prefer a locally provided copy next to the script;
+// fall back to downloading a release build.
+
+If,%SourceArch%,Equal,x64,Set,%BinaryName%,%BinaryX64%
+Else,If,%SourceArch%,Equal,ARM64,Set,%BinaryName%,%BinaryA64%
+Else,Halt,"RustTerminal ERROR: Unsupported processor architecture [%SourceArch%]."
+
+If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%BinaryName%",Run,%ScriptFile%,DownloadProgram
+FileCopy,"%ProgramsCache%\%ProgramFolder%\%BinaryName%","%TargetPrograms%\%ProgramFolder%\%BinaryName%"
+
+Run,%ScriptFile%,Config
+
+[#Config#]
+// ===============================================================================================================================
+// Name...........: Config
+// Description....: Write RustTerminal configuration to the SOFTWARE hive.
+// Remarks........: PE runs the shell as SYSTEM, so config goes in HKLM\Software\
+//                  RustTerminal (RustTerminal reads HKLM first, then overlays
+//                  HKCU). The accent color is NOT written here: RustTerminal
+//                  reads it from HKLM\Software\StartPE\StartButtonColor so it
+//                  matches StartPE automatically.
+// ===============================================================================================================================
+[Config]
+Echo,"Configuring RustTerminal..."
+
+RegHiveLoad,Tmp_Software,%RegSoftware%
+
+// Shell to launch (PowerShell or Command Prompt).
+If,%cmb_Shell%,Equal,"Command Prompt",RegWrite,HKLM,REG_SZ,"Tmp_Software\RustTerminal","Shell","cmd.exe"
+Else,RegWrite,HKLM,REG_SZ,"Tmp_Software\RustTerminal","Shell","powershell.exe"
+
+// Monospace font face (falls back to Consolas / Lucida Console / Courier New
+// if the chosen face isn't present in the PE image).
+RegWrite,HKLM,REG_SZ,"Tmp_Software\RustTerminal","FontFace",%tb_FontFace%
+
+// Font cell height (px) and scrollback capacity (lines).
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\RustTerminal","FontSize",%nb_FontSize%
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\RustTerminal","Scrollback",%nb_Scrollback%
+
+RegHiveUnload,Tmp_Software
+
+[#DownloadProgram#]
+// ===============================================================================================================================
+// Name...........: DownloadProgram
+// Description....: Download a release build of RustTerminal.
+// ===============================================================================================================================
+[DownloadProgram]
+If,%DownloadURL%,Equal,"",Halt,"RustTerminal ERROR: No local copy of [%BinaryName%] found in [%ProgramsCache%\%ProgramFolder%] and no %DownloadURL% is configured. Build it with cargo and place it there, or set the download URL."
+Echo,"Downloading the latest version of %ScriptTitle%..."
+WebGet,"%DownloadURL%%BinaryName%","%ProgramsCache%\%ProgramFolder%\%BinaryName%",NOERR
+If,Not,#r,Equal,200,Halt,"Download failed: The code returned was [#r]."
+
+[#ClearDownloadCache#]
+[ClearDownloadCache]
+DirDeleteEx,"%ProgramsCache%\%ProgramFolder%"
+
+[#SetDefaultOptions#]
+[SetDefaultOptions]
+System,Cursor,Wait
+WriteInterface,Value,%ScriptFile%,Interface,cb_AlwaysDownload,False
+WriteInterface,Value,%ScriptFile%,Interface,cmb_Shell,PowerShell
+WriteInterface,Value,%ScriptFile%,Interface,tb_FontFace,Consolas
+WriteInterface,Value,%ScriptFile%,Interface,nb_FontSize,16
+WriteInterface,Value,%ScriptFile%,Interface,nb_Scrollback,5000
+System,Cursor,Normal
+
+[#ShowScriptInfo#]
+[ShowScriptInfo]
+Message,"RustTerminal is a free, open source (GPLv3) GDI terminal emulator for Windows PE.#$x#$xhttps://github.com/steeb-k/rust-terminal"
+
+[Interface]
+bvl_Homepage=bvl_Homepage,1,12,367,5,72,25
+web_Homepage=Homepage,1,10,377,9,60,18,https://github.com/steeb-k/rust-terminal
+btn_DownloadProgram="Download",1,8,440,5,80,25,DownloadProgram,,False,"__Download the latest release build."
+btn_PurgeCache="Purge cache",1,8,525,5,80,25,ClearDownloadCache,,True,"__Remove all downloaded files."
+cb_AlwaysDownload="Always download latest version",1,3,5,50,250,18,False,"__Always include the latest release of RustTerminal in your build."
+bvl_Options="Terminal Options",1,12,5,85,400,170,8,Bold
+lbl_Shell="Default shell:",1,1,16,113,90,18,8,Normal
+cmb_Shell=PowerShell,1,4,110,108,150,21,PowerShell,Command Prompt
+lbl_FontFace="Font face:",1,1,16,145,90,18,8,Normal
+tb_FontFace=Consolas,1,0,110,142,150,21
+lbl_FontSize="Font size (px):",1,1,16,177,90,18,8,Normal
+nb_FontSize=,1,2,110,172,55,22,16,8,48,1
+lbl_Scrollback="Scrollback (lines):",1,1,200,177,100,18,8,Normal
+nb_Scrollback=,1,2,305,172,80,22,5000,0,100000,500
+lbl_Accent="Accent color is shared with StartPE (HKLM\Software\StartPE\StartButtonColor); install StartPE to set it.",1,1,16,210,560,30,8,Normal
+btn_SetDefaultOptions="Restore Defaults",1,8,16,225,120,25,SetDefaultOptions,,True,"__Restore Defaults"
+btn_ScriptInfo="Script Info",1,8,145,225,100,25,ShowScriptInfo,,True,"__Script Info"
