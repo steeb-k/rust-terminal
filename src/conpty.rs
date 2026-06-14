@@ -13,7 +13,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use windows::core::{PWSTR, Result};
-use windows::Win32::Foundation::{CloseHandle, ERROR_BROKEN_PIPE, HANDLE, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, DuplicateHandle, ERROR_BROKEN_PIPE, DUPLICATE_SAME_ACCESS, HANDLE, HWND, LPARAM,
+    WPARAM,
+};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Console::{
@@ -21,14 +24,17 @@ use windows::Win32::System::Console::{
 };
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
-    CreateProcessW, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
-    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROCESS_INFORMATION, STARTUPINFOEXW,
+    CreateProcessW, GetCurrentProcess, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
+    WaitForSingleObject, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, STARTUPINFOEXW,
 };
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 /// Posted (no payload) to the terminal window whenever new PTY output is ready.
 pub const WM_PTY_DATA: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+/// Posted with `wParam = session id` when a session's shell process exits
+/// (e.g. the user typed `exit`); the UI closes that tab.
+pub const WM_PTY_EXIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x0002_0016;
 
@@ -37,6 +43,7 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 pub struct Pty {
+    pub id: u64,
     hpc: HPCON,
     input_write: HANDLE,
     child_process: HANDLE,
@@ -47,8 +54,9 @@ pub struct Pty {
 
 impl Pty {
     /// Spawn `cmdline` under a fresh pseudoconsole sized `cols`x`rows`. Output
-    /// is collected into a shared buffer; `hwnd` is notified via `WM_PTY_DATA`.
-    pub fn spawn(cmdline: &str, cols: u16, rows: u16, hwnd: HWND) -> Result<Pty> {
+    /// is collected into a shared buffer; `hwnd` is notified via `WM_PTY_DATA`,
+    /// and `WM_PTY_EXIT` (with `id`) when the child exits.
+    pub fn spawn(id: u64, cmdline: &str, cols: u16, rows: u16, hwnd: HWND) -> Result<Pty> {
         unsafe {
             let sa = SECURITY_ATTRIBUTES {
                 nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -116,6 +124,7 @@ impl Pty {
             let pending_r = Arc::clone(&pending);
             let out_raw = output_read.0 as usize;
             let hwnd_raw = hwnd.0 as isize;
+            let exit_id = id;
             let reader = std::thread::spawn(move || {
                 let output_read = HANDLE(out_raw as *mut c_void);
                 let hwnd = HWND(hwnd_raw as *mut c_void);
@@ -134,8 +143,34 @@ impl Pty {
                 }
                 let _ = CloseHandle(output_read);
             });
+            let _ = exit_id; // reader no longer signals exit; the watcher below does
+
+            // Watcher thread: post WM_PTY_EXIT when the shell *process* exits. We
+            // can't rely on the output pipe — ConPTY keeps it open as long as we
+            // hold the HPCON — so wait on a duplicate of the child handle.
+            let mut watch = HANDLE::default();
+            let _ = DuplicateHandle(
+                GetCurrentProcess(),
+                pi.hProcess,
+                GetCurrentProcess(),
+                &mut watch,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            );
+            let watch_raw = watch.0 as isize;
+            let hwnd_raw2 = hwnd.0 as isize;
+            let watch_id = id;
+            std::thread::spawn(move || {
+                let h = HANDLE(watch_raw as *mut c_void);
+                WaitForSingleObject(h, INFINITE);
+                let hwnd = HWND(hwnd_raw2 as *mut c_void);
+                let _ = PostMessageW(hwnd, WM_PTY_EXIT, WPARAM(watch_id as usize), LPARAM(0));
+                let _ = CloseHandle(h);
+            });
 
             Ok(Pty {
+                id,
                 hpc,
                 input_write,
                 child_process: pi.hProcess,

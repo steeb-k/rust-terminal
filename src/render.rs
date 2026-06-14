@@ -15,7 +15,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
-use crate::chrome::{caption_xs, close_box, newtab_x, tab_x, BTN_W, CHROME_H, TAB_W};
+use crate::chrome::{
+    caption_xs, close_box, newtab_x, tab_x, CaptionBtn, BTN_W, CHROME_H, PAD_X, PAD_Y, TAB_W,
+};
 use crate::colors::{rgb, DEFAULT_BG, SEL_BG, SEL_FG};
 use crate::grid::{Cell, CursorStyle, FLAG_BOLD, FLAG_REVERSE, FLAG_UNDERLINE};
 use crate::parser::Term;
@@ -23,6 +25,10 @@ use crate::parser::Term;
 const CHROME_BG: u32 = rgb(28, 28, 30);
 const TAB_TEXT: u32 = rgb(225, 225, 225);
 const TAB_TEXT_DIM: u32 = rgb(150, 150, 150);
+const HOVER_BG: u32 = rgb(60, 60, 62);
+const CLOSE_HOVER_BG: u32 = rgb(232, 17, 35);
+/// Extra vertical space added per text row for comfortable line spacing.
+const LINE_GAP: i32 = 4;
 
 pub struct Fonts {
     pub normal: HFONT,
@@ -31,6 +37,8 @@ pub struct Fonts {
     pub glyph: HFONT,
     pub cw: i32,
     pub ch: i32,
+    /// Pixels of leading above the glyph within each (gapped) cell.
+    pub lead: i32,
 }
 
 impl Fonts {
@@ -48,13 +56,15 @@ impl Fonts {
             let _ = GetTextMetricsW(hdc, &mut tm);
             SelectObject(hdc, old);
             ReleaseDC(None, hdc);
+            let base_h = (tm.tmHeight + tm.tmExternalLeading).max(1);
             Fonts {
                 normal,
                 bold,
                 ui,
                 glyph,
                 cw: tm.tmAveCharWidth.max(1),
-                ch: (tm.tmHeight + tm.tmExternalLeading).max(1),
+                ch: base_h + LINE_GAP,
+                lead: LINE_GAP / 2,
             }
         }
     }
@@ -129,29 +139,26 @@ unsafe fn make_font(px: i32, weight: i32, face: PCWSTR, pitch: u32) -> HFONT {
     )
 }
 
-pub fn paint(hwnd: HWND, term: &Term, fonts: &Fonts, labels: &[String], active: usize, accent: u32, is_max: bool) {
+pub struct Chrome<'a> {
+    pub labels: &'a [String],
+    pub active: usize,
+    pub accent: u32,
+    pub is_max: bool,
+    pub hover: Option<CaptionBtn>,
+}
+
+pub fn paint(hwnd: HWND, term: &Term, fonts: &Fonts, chrome: &Chrome) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(hwnd, &mut ps);
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
-        render_to(hdc, rc.right - rc.left, rc.bottom - rc.top, term, fonts, labels, active, accent, is_max);
+        render_to(hdc, rc.right - rc.left, rc.bottom - rc.top, term, fonts, chrome);
         let _ = EndPaint(hwnd, &ps);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn render_to(
-    target: HDC,
-    width: i32,
-    height: i32,
-    term: &Term,
-    fonts: &Fonts,
-    labels: &[String],
-    active: usize,
-    accent: u32,
-    is_max: bool,
-) {
+pub fn render_to(target: HDC, width: i32, height: i32, term: &Term, fonts: &Fonts, chrome: &Chrome) {
     unsafe {
         let rc = RECT { left: 0, top: 0, right: width, bottom: height };
         let mem = CreateCompatibleDC(target);
@@ -162,11 +169,11 @@ pub fn render_to(
         FillRect(mem, &rc, bg);
         let _ = DeleteObject(bg);
 
-        draw_chrome(mem, width, fonts, labels, active, accent, is_max);
+        draw_chrome(mem, width, fonts, chrome);
 
         SetBkMode(mem, OPAQUE);
-        draw_cells(mem, term, fonts, CHROME_H);
-        draw_cursor(mem, term, fonts, CHROME_H, accent);
+        draw_cells(mem, term, fonts, PAD_X, CHROME_H + PAD_Y);
+        draw_cursor(mem, term, fonts, PAD_X, CHROME_H + PAD_Y, chrome.accent);
 
         let _ = BitBlt(target, 0, 0, width, height, mem, 0, 0, SRCCOPY);
 
@@ -189,46 +196,62 @@ unsafe fn text(mem: HDC, x: i32, y: i32, clip: RECT, s: &str, color: u32) {
     let _ = ExtTextOutW(mem, x, y, ETO_CLIPPED, Some(&clip), PCWSTR(u.as_ptr()), u.len() as u32, None);
 }
 
-unsafe fn draw_chrome(mem: HDC, width: i32, fonts: &Fonts, labels: &[String], active: usize, accent: u32, is_max: bool) {
+unsafe fn draw_chrome(mem: HDC, width: i32, fonts: &Fonts, c: &Chrome) {
     fill(mem, 0, 0, width, CHROME_H, CHROME_BG);
-    SelectObject(mem, fonts.ui);
     SetBkMode(mem, TRANSPARENT);
+    // Vertically center the (~18px) tab text in the taller bar.
+    let ty = (CHROME_H - 18) / 2;
 
-    for (i, label) in labels.iter().enumerate() {
+    SelectObject(mem, fonts.ui);
+    for (i, label) in c.labels.iter().enumerate() {
         let x0 = tab_x(i);
         let x1 = x0 + TAB_W;
-        let actv = i == active;
+        let actv = i == c.active;
         if actv {
             fill(mem, x0, 0, x1, CHROME_H, DEFAULT_BG);
-            fill(mem, x0, 0, x1, 2, accent); // accent top bar
+            fill(mem, x0, 0, x1, 2, c.accent); // accent top bar
         } else if i > 0 {
-            fill(mem, x0, 6, x0 + 1, CHROME_H - 6, rgb(60, 60, 60)); // separator
+            fill(mem, x0, 7, x0 + 1, CHROME_H - 7, rgb(60, 60, 60)); // separator
         }
-        let label_clip = RECT { left: x0 + 10, top: 0, right: x1 - 26, bottom: CHROME_H };
+        let label_clip = RECT { left: x0 + 12, top: 0, right: x1 - 32, bottom: CHROME_H };
         let color = if actv { TAB_TEXT } else { TAB_TEXT_DIM };
-        text(mem, x0 + 10, 6, label_clip, label, color);
+        text(mem, x0 + 12, ty, label_clip, label, color);
 
         let (cx0, _, cx1, _) = close_box(i);
         let close_clip = RECT { left: cx0, top: 0, right: cx1 + 2, bottom: CHROME_H };
-        text(mem, cx0, 6, close_clip, "\u{00D7}", TAB_TEXT_DIM);
+        text(mem, cx0, ty, close_clip, "\u{00D7}", TAB_TEXT_DIM);
     }
 
-    let nx = newtab_x(labels.len());
-    let plus_clip = RECT { left: nx, top: 0, right: nx + 24, bottom: CHROME_H };
-    text(mem, nx + 7, 5, plus_clip, "+", TAB_TEXT);
+    let nx = newtab_x(c.labels.len());
+    let plus_clip = RECT { left: nx, top: 0, right: nx + 26, bottom: CHROME_H };
+    text(mem, nx + 8, ty - 1, plus_clip, "+", TAB_TEXT);
 
     // Caption buttons (Segoe MDL2 Assets glyphs): minimize, maximize/restore, close.
+    // Each highlights on hover (red for close, lighter gray for min/max).
     SelectObject(mem, fonts.glyph);
+    let gy = (CHROME_H - 14) / 2;
     let (min_x, max_x, close_x) = caption_xs(width);
-    let max_glyph = if is_max { "\u{E923}" } else { "\u{E922}" }; // restore / maximize
-    let btns = [(min_x, "\u{E921}"), (max_x, max_glyph), (close_x, "\u{E8BB}")];
-    for (bx, glyph) in btns {
+    let max_glyph = if c.is_max { "\u{E923}" } else { "\u{E922}" };
+    let btns = [
+        (min_x, "\u{E921}", CaptionBtn::Min),
+        (max_x, max_glyph, CaptionBtn::Max),
+        (close_x, "\u{E8BB}", CaptionBtn::Close),
+    ];
+    for (bx, glyph, which) in btns {
+        let hovered = c.hover == Some(which);
+        let fg = if hovered {
+            let bg = if which == CaptionBtn::Close { CLOSE_HOVER_BG } else { HOVER_BG };
+            fill(mem, bx, 0, bx + BTN_W, CHROME_H, bg);
+            rgb(255, 255, 255)
+        } else {
+            TAB_TEXT_DIM
+        };
         let clip = RECT { left: bx, top: 0, right: bx + BTN_W, bottom: CHROME_H };
-        text(mem, bx + 16, 8, clip, glyph, TAB_TEXT_DIM);
+        text(mem, bx + 16, gy, clip, glyph, fg);
     }
 }
 
-unsafe fn draw_cells(mem: HDC, term: &Term, fonts: &Fonts, y_off: i32) {
+unsafe fn draw_cells(mem: HDC, term: &Term, fonts: &Fonts, x_off: i32, y_off: i32) {
     let g = &term.grid;
     let dx = vec![fonts.cw; g.cols];
     let mut cur_font: HFONT = HFONT::default();
@@ -279,10 +302,11 @@ unsafe fn draw_cells(mem: HDC, term: &Term, fonts: &Fonts, y_off: i32) {
             SetBkColor(mem, COLORREF(b0));
 
             let t: Vec<u16> = (start..x).map(|cx| eff(cx).0 as u16).collect();
-            let px = start as i32 * fonts.cw;
+            let px = x_off + start as i32 * fonts.cw;
             let py = y_off + y as i32 * fonts.ch;
+            // Opaque fill covers the full (gapped) cell; the glyph sits below the leading.
             let rect = RECT { left: px, top: py, right: px + run_len as i32 * fonts.cw, bottom: py + fonts.ch };
-            let _ = ExtTextOutW(mem, px, py, ETO_OPAQUE, Some(&rect), PCWSTR(t.as_ptr()), run_len as u32, Some(dx.as_ptr()));
+            let _ = ExtTextOutW(mem, px, py + fonts.lead, ETO_OPAQUE, Some(&rect), PCWSTR(t.as_ptr()), run_len as u32, Some(dx.as_ptr()));
 
             if fl0 & FLAG_UNDERLINE != 0 {
                 let uy = py + fonts.ch - 1;
@@ -292,12 +316,12 @@ unsafe fn draw_cells(mem: HDC, term: &Term, fonts: &Fonts, y_off: i32) {
     }
 }
 
-unsafe fn draw_cursor(mem: HDC, term: &Term, fonts: &Fonts, y_off: i32, accent: u32) {
+unsafe fn draw_cursor(mem: HDC, term: &Term, fonts: &Fonts, x_off: i32, y_off: i32, accent: u32) {
     let g = &term.grid;
     if !g.cursor_visible || g.view_offset != 0 {
         return;
     }
-    let px = g.cx as i32 * fonts.cw;
+    let px = x_off + g.cx as i32 * fonts.cw;
     let py = y_off + g.cy as i32 * fonts.ch;
     match g.cursor_style {
         CursorStyle::Block => {

@@ -32,7 +32,8 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VIRTUAL_KEY, VK_CONTROL, VK_SHIFT,
+    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
+    TME_NONCLIENT, VIRTUAL_KEY, VK_CONTROL, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
@@ -40,24 +41,54 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_VREDRAW, CW_USEDEFAULT, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTCLOSE,
     HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, MINMAXINFO,
     MSG, SW_SHOW, WM_CHAR, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT,
-    WM_PRINTCLIENT, WM_SIZE, WNDCLASSW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
-    WS_THICKFRAME,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST,
+    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_PRINTCLIENT, WM_SIZE, WNDCLASSW, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
 
-use chrome::{Hit, BORDER, CHROME_H};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use chrome::{CaptionBtn, Hit, BORDER, CHROME_H, PAD_X, PAD_Y};
 use config::Config;
-use conpty::{Pty, WM_PTY_DATA};
+use conpty::{Pty, WM_PTY_DATA, WM_PTY_EXIT};
 use parser::Term;
-use render::Fonts;
+use render::{Chrome, Fonts};
 
 /// Window corner radius.
 const RADIUS: i32 = 12;
 
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A clean default tab name for a shell command line.
+fn shell_label(shell: &str) -> String {
+    let s = shell.to_lowercase();
+    if s.contains("powershell") || s.contains("pwsh") {
+        "PowerShell".into()
+    } else if s.contains("cmd") {
+        "Command Prompt".into()
+    } else {
+        "Shell".into()
+    }
+}
+
+/// Is Windows PowerShell present on this system? (PE images may omit it.)
+fn powershell_available() -> bool {
+    if let Ok(root) = std::env::var("SystemRoot") {
+        let p = format!("{root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        return std::path::Path::new(&p).exists();
+    }
+    false
+}
+
 struct Session {
     pty: Pty,
     term: Term,
+    /// Default label (from the shell) when the program sets no usable title.
+    label: String,
 }
 
 struct App {
@@ -66,6 +97,8 @@ struct App {
     active: usize,
     accent: u32,
     selecting: bool,
+    hover: Option<CaptionBtn>,
+    ps_available: bool,
     cfg: Config,
 }
 
@@ -76,26 +109,14 @@ impl App {
     fn cur_mut(&mut self) -> &mut Session {
         &mut self.tabs[self.active]
     }
-    /// A clean default tab name derived from the configured shell.
-    fn default_label(&self) -> &'static str {
-        let s = self.cfg.shell.to_lowercase();
-        if s.contains("powershell") || s.contains("pwsh") {
-            "PowerShell"
-        } else if s.contains("cmd") {
-            "Command Prompt"
-        } else {
-            "Shell"
-        }
-    }
     fn labels(&self) -> Vec<String> {
-        let default = self.default_label();
         self.tabs
             .iter()
             .map(|s| {
                 let t = &s.term.title;
                 // Ignore PowerShell's noisy "...\powershell.exe" path title.
                 if t.is_empty() || t.ends_with(".exe") {
-                    default.to_string()
+                    s.label.clone()
                 } else {
                     t.clone()
                 }
@@ -112,18 +133,24 @@ fn key_down(vk: VIRTUAL_KEY) -> bool {
     unsafe { (GetKeyState(vk.0 as i32) as u16 & 0x8000) != 0 }
 }
 
-/// Grid (cols, rows) for the terminal area (client minus the chrome strip).
+/// Grid (cols, rows) for the terminal area (client minus chrome and padding).
 fn term_grid_size(hwnd: HWND, fonts: &Fonts) -> (u16, u16) {
     let mut rc = RECT::default();
     unsafe {
         let _ = GetClientRect(hwnd, &mut rc);
     }
-    fonts.grid_size(rc.right - rc.left, (rc.bottom - rc.top - CHROME_H).max(1))
+    let w = (rc.right - rc.left - 2 * PAD_X).max(1);
+    let h = (rc.bottom - rc.top - CHROME_H - 2 * PAD_Y).max(1);
+    fonts.grid_size(w, h)
 }
 
 fn spawn_session(hwnd: HWND, shell: &str, cols: u16, rows: u16, scrollback: usize) -> Option<Session> {
-    match Pty::spawn(shell, cols, rows, hwnd) {
-        Ok(pty) => Some(Session { pty, term: Term::new(cols as usize, rows as usize, scrollback) }),
+    match Pty::spawn(next_id(), shell, cols, rows, hwnd) {
+        Ok(pty) => Some(Session {
+            pty,
+            term: Term::new(cols as usize, rows as usize, scrollback),
+            label: shell_label(shell),
+        }),
         Err(_) => None,
     }
 }
@@ -131,10 +158,10 @@ fn spawn_session(hwnd: HWND, shell: &str, cols: u16, rows: u16, scrollback: usiz
 /// Map a mouse `lparam` to a (virtual line, column) in the active grid, taking
 /// the chrome offset into account.
 fn mouse_cell(app: &App, lparam: LPARAM) -> (usize, usize) {
-    let x = (lparam.0 & 0xffff) as i16 as i32;
-    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32 - CHROME_H;
+    let x = (lparam.0 & 0xffff) as i16 as i32 - PAD_X;
+    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32 - CHROME_H - PAD_Y;
     let g = &app.cur().term.grid;
-    let col = (x / app.fonts.cw).clamp(0, g.cols as i32 - 1) as usize;
+    let col = (x.max(0) / app.fonts.cw).clamp(0, g.cols as i32 - 1) as usize;
     let row = (y.max(0) / app.fonts.ch).clamp(0, g.rows as i32 - 1) as usize;
     (g.display_vline(row), col)
 }
@@ -227,18 +254,34 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let cfg = Config::load();
                 let fonts = Fonts::new(cfg.font_px, &cfg.font_face);
                 let (cols, rows) = term_grid_size(hwnd, &fonts);
-                match spawn_session(hwnd, &cfg.shell, cols, rows, cfg.scrollback) {
-                    Some(sess) => STATE.with_borrow_mut(|s| {
+                let ps_available = powershell_available();
+
+                // First-launch tabs: if PowerShell is present, open both shells so
+                // the user can switch (Ctrl+Tab); otherwise just Command Prompt.
+                let shells: &[&str] = if ps_available {
+                    &["powershell.exe", "cmd.exe"]
+                } else {
+                    &["cmd.exe"]
+                };
+                let tabs: Vec<Session> = shells
+                    .iter()
+                    .filter_map(|sh| spawn_session(hwnd, sh, cols, rows, cfg.scrollback))
+                    .collect();
+                if tabs.is_empty() {
+                    PostQuitMessage(1);
+                } else {
+                    STATE.with_borrow_mut(|s| {
                         *s = Some(App {
                             fonts,
-                            tabs: vec![sess],
+                            tabs,
                             active: 0,
                             accent: cfg.accent,
                             selecting: false,
+                            hover: None,
+                            ps_available,
                             cfg,
                         })
-                    }),
-                    None => PostQuitMessage(1),
+                    });
                 }
                 LRESULT(0)
             }
@@ -320,12 +363,42 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
 
+            WM_PTY_EXIT => {
+                // A shell exited (e.g. the user typed `exit`): close that tab.
+                let id = wparam.0 as u64;
+                let empty = STATE.with_borrow_mut(|s| {
+                    if let Some(app) = s.as_mut() {
+                        if let Some(idx) = app.tabs.iter().position(|t| t.pty.id == id) {
+                            app.tabs.remove(idx);
+                            if app.tabs.is_empty() {
+                                return true;
+                            }
+                            app.active = app.active.min(app.tabs.len() - 1);
+                        }
+                    }
+                    false
+                });
+                if empty {
+                    let _ = DestroyWindow(hwnd);
+                } else {
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
+                LRESULT(0)
+            }
+
             WM_PAINT => {
                 let is_max = IsZoomed(hwnd).as_bool();
                 STATE.with_borrow(|s| {
                     if let Some(app) = s.as_ref() {
                         let labels = app.labels();
-                        render::paint(hwnd, &app.cur().term, &app.fonts, &labels, app.active, app.accent, is_max);
+                        let chrome = Chrome {
+                            labels: &labels,
+                            active: app.active,
+                            accent: app.accent,
+                            is_max,
+                            hover: app.hover,
+                        };
+                        render::paint(hwnd, &app.cur().term, &app.fonts, &chrome);
                     }
                 });
                 LRESULT(0)
@@ -339,7 +412,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         let mut rc = RECT::default();
                         let _ = GetClientRect(hwnd, &mut rc);
                         let labels = app.labels();
-                        render::render_to(hdc, rc.right, rc.bottom, &app.cur().term, &app.fonts, &labels, app.active, app.accent, is_max);
+                        let chrome = Chrome {
+                            labels: &labels,
+                            active: app.active,
+                            accent: app.accent,
+                            is_max,
+                            hover: app.hover,
+                        };
+                        render::render_to(hdc, rc.right, rc.bottom, &app.cur().term, &app.fonts, &chrome);
                     }
                 });
                 LRESULT(0)
@@ -369,7 +449,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
 
             WM_CHAR => {
-                if key_down(VK_CONTROL) && key_down(VK_SHIFT) {
+                let ctrl = key_down(VK_CONTROL);
+                let shift = key_down(VK_SHIFT);
+                // Swallow the control chars for keys we handle as app shortcuts so
+                // they never reach the shell. Plain Ctrl+C (0x03) still passes.
+                if ctrl && shift {
+                    return LRESULT(0);
+                }
+                if ctrl && matches!(wparam.0 as u16, 0x14 | 0x17 | 0x09) {
+                    // Ctrl+T (0x14), Ctrl+W (0x17), Ctrl+Tab/Ctrl+I (0x09)
                     return LRESULT(0);
                 }
                 let bytes = input::char_bytes(wparam.0 as u16);
@@ -387,15 +475,33 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wparam.0 as u16);
-                if key_down(VK_CONTROL) && key_down(VK_SHIFT) {
-                    match wparam.0 as u16 {
-                        0x43 => copy_selection(hwnd),  // 'C'
-                        0x56 => paste_clipboard(hwnd), // 'V'
-                        0x54 => new_tab(hwnd),         // 'T'
-                        0x57 => close_tab(hwnd, None), // 'W'
+                let ctrl = key_down(VK_CONTROL);
+                let shift = key_down(VK_SHIFT);
+                if ctrl && shift {
+                    match vk {
+                        VIRTUAL_KEY(0x43) => copy_selection(hwnd),  // Ctrl+Shift+C
+                        VIRTUAL_KEY(0x56) => paste_clipboard(hwnd), // Ctrl+Shift+V
+                        VK_TAB => switch_tab(hwnd, -1),             // Ctrl+Shift+Tab
                         _ => {}
                     }
                     return LRESULT(0);
+                }
+                if ctrl {
+                    match vk {
+                        VIRTUAL_KEY(0x54) => {
+                            new_tab(hwnd); // Ctrl+T
+                            return LRESULT(0);
+                        }
+                        VIRTUAL_KEY(0x57) => {
+                            close_tab(hwnd, None); // Ctrl+W
+                            return LRESULT(0);
+                        }
+                        VK_TAB => {
+                            switch_tab(hwnd, 1); // Ctrl+Tab
+                            return LRESULT(0);
+                        }
+                        _ => {} // Ctrl+C/V etc. fall through to the shell
+                    }
                 }
                 STATE.with_borrow_mut(|s| {
                     if let Some(app) = s.as_mut() {
@@ -483,6 +589,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
 
+            WM_NCMOUSEMOVE => {
+                let btn = match wparam.0 as u32 {
+                    HTMINBUTTON => Some(CaptionBtn::Min),
+                    HTMAXBUTTON => Some(CaptionBtn::Max),
+                    HTCLOSE => Some(CaptionBtn::Close),
+                    _ => None,
+                };
+                set_hover(hwnd, btn);
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            WM_NCMOUSELEAVE => {
+                set_hover(hwnd, None);
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
             WM_ERASEBKGND => LRESULT(1),
 
             WM_DESTROY => {
@@ -496,11 +618,61 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     }
 }
 
+/// Update the hovered caption button and repaint if it changed; arm a leave
+/// notification while a button is hovered.
+fn set_hover(hwnd: HWND, btn: Option<CaptionBtn>) {
+    let changed = STATE.with_borrow_mut(|s| match s.as_mut() {
+        Some(app) if app.hover != btn => {
+            app.hover = btn;
+            true
+        }
+        _ => false,
+    });
+    if btn.is_some() {
+        unsafe {
+            let mut tme = TRACKMOUSEEVENT {
+                cbSize: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE | TME_NONCLIENT,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            let _ = TrackMouseEvent(&mut tme);
+        }
+    }
+    if changed {
+        unsafe {
+            let _ = InvalidateRect(hwnd, None, false);
+        }
+    }
+}
+
+/// Move the active tab by `dir` (+1 next, -1 previous), wrapping.
+fn switch_tab(hwnd: HWND, dir: isize) {
+    STATE.with_borrow_mut(|s| {
+        if let Some(app) = s.as_mut() {
+            let n = app.tabs.len() as isize;
+            if n > 1 {
+                app.active = (app.active as isize + dir).rem_euclid(n) as usize;
+            }
+        }
+    });
+    unsafe {
+        let _ = InvalidateRect(hwnd, None, false);
+    }
+}
+
 fn new_tab(hwnd: HWND) {
     let params = STATE.with_borrow(|s| {
         s.as_ref().map(|a| {
             let (cols, rows) = term_grid_size(hwnd, &a.fonts);
-            (cols, rows, a.cfg.shell.clone(), a.cfg.scrollback)
+            // Fall back to cmd if the configured shell is PowerShell but absent.
+            let want_ps = a.cfg.shell.to_lowercase().contains("powershell");
+            let shell = if want_ps && !a.ps_available {
+                "cmd.exe".to_string()
+            } else {
+                a.cfg.shell.clone()
+            };
+            (cols, rows, shell, a.cfg.scrollback)
         })
     });
     let Some((cols, rows, shell, scrollback)) = params else {

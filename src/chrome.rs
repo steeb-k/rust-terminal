@@ -3,15 +3,25 @@
 //! Shared by the renderer (drawing) and the window proc (clicks, NCHITTEST).
 
 /// Height of the tab strip / titlebar, in pixels.
-pub const CHROME_H: i32 = 30;
+pub const CHROME_H: i32 = 36;
 /// Fixed tab width.
-pub const TAB_W: i32 = 170;
+pub const TAB_W: i32 = 200;
 /// New-tab ("+") button width.
-pub const NEWTAB_W: i32 = 28;
+pub const NEWTAB_W: i32 = 30;
 /// Resize-grab border thickness.
 pub const BORDER: i32 = 6;
 /// Caption button (min/max/close) width.
 pub const BTN_W: i32 = 46;
+/// Terminal content inset (padding) from the window edges, in pixels.
+pub const PAD_X: i32 = 8;
+pub const PAD_Y: i32 = 4;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum CaptionBtn {
+    Min,
+    Max,
+    Close,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Hit {
@@ -40,10 +50,11 @@ pub fn newtab_x(ntabs: usize) -> i32 {
     ntabs as i32 * TAB_W + 4
 }
 
-/// Close-box rect (x0, y0, x1, y1) inside tab `i`.
+/// Close-box rect (x0, y0, x1, y1) inside tab `i`, vertically centered.
 pub fn close_box(i: usize) -> (i32, i32, i32, i32) {
     let x1 = tab_x(i) + TAB_W;
-    (x1 - 23, 8, x1 - 9, 22)
+    let cy = CHROME_H / 2;
+    (x1 - 27, cy - 8, x1 - 11, cy + 8)
 }
 
 /// Classify a client-space point within the chrome region.
