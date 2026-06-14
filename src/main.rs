@@ -37,14 +37,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     TME_NONCLIENT, VIRTUAL_KEY, VK_CONTROL, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    LoadCursorW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage, CS_HREDRAW,
-    CS_VREDRAW, CW_USEDEFAULT, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTCLOSE,
-    HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, MINMAXINFO,
-    MSG, SW_SHOW, WM_CHAR, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE,
-    WM_NCHITTEST, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PRINTCLIENT, WM_SIZE,
-    WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
+    GetMessageW, LoadCursorW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage,
+    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION,
+    HTCLIENT, HTCLOSE, HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
+    IDC_ARROW, MA_ACTIVATE, MA_ACTIVATEANDEAT, MINMAXINFO, MSG, SW_SHOW, WM_CHAR, WM_CREATE,
+    WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
+    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PRINTCLIENT, WM_SIZE, WNDCLASSW,
     WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
@@ -276,6 +276,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // lParam suppresses the NC repaint while keeping the window "active".
             WM_NCACTIVATE => DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)),
 
+            // The click that focuses an inactive window should NOT also register
+            // in the terminal (it would start a selection and could pause output).
+            // Eat it for the terminal area; let chrome clicks (tabs/buttons) work.
+            WM_MOUSEACTIVATE => {
+                let mut pt = POINT::default();
+                let _ = GetCursorPos(&mut pt);
+                let _ = ScreenToClient(hwnd, &mut pt);
+                if pt.y >= CHROME_H {
+                    LRESULT(MA_ACTIVATEANDEAT as isize)
+                } else {
+                    LRESULT(MA_ACTIVATE as isize)
+                }
+            }
+
             WM_CREATE => {
                 let cfg = Config::load();
                 let fonts = Fonts::new(cfg.font_px, &cfg.font_face);
@@ -487,6 +501,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
                 if ctrl && matches!(wparam.0 as u16, 0x14 | 0x17 | 0x09) {
                     // Ctrl+T (0x14), Ctrl+W (0x17), Ctrl+Tab/Ctrl+I (0x09)
+                    return LRESULT(0);
+                }
+                if matches!(wparam.0 as u16, 0x08 | 0x7f) {
+                    // Backspace / Ctrl+Backspace are encoded in WM_KEYDOWN.
                     return LRESULT(0);
                 }
                 let bytes = input::char_bytes(wparam.0 as u16);

@@ -7,9 +7,9 @@
 //! (application cursor keys) and Shift/Alt/Ctrl modifiers (xterm style).
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_F1, VK_F10, VK_F11,
-    VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME, VK_INSERT, VK_LEFT,
-    VK_MENU, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_UP,
+    GetKeyState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_F1, VK_F10,
+    VK_F11, VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME, VK_INSERT,
+    VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_UP,
 };
 
 /// Encode a `WM_CHAR` UTF-16 code unit as UTF-8 bytes to send to the shell.
@@ -45,6 +45,13 @@ fn modifier_mask() -> u8 {
 /// for keys that `WM_CHAR` handles instead.
 pub fn key_bytes(vk: VIRTUAL_KEY, app_cursor: bool) -> Option<Vec<u8>> {
     let m = modifier_mask();
+
+    // Backspace: send VT-convention codes so ConPTY maps them as intended —
+    // DEL (0x7f) = delete one char (plain Backspace), BS (0x08) = delete word
+    // (Ctrl+Backspace). Passing the raw Windows WM_CHAR codes swaps these.
+    if vk == VK_BACK {
+        return Some(vec![if m & 4 != 0 { 0x08 } else { 0x7f }]);
+    }
 
     // Cursor/Home/End: letter-final form (SS3 in app-cursor mode when unmodified).
     let letter = match vk {
