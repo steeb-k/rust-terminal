@@ -51,10 +51,11 @@ pub fn newtab_x(ntabs: usize) -> i32 {
 }
 
 /// Close-box rect (x0, y0, x1, y1) inside tab `i`, vertically centered.
+/// A roomy square so it's an easy click target.
 pub fn close_box(i: usize) -> (i32, i32, i32, i32) {
     let x1 = tab_x(i) + TAB_W;
     let cy = CHROME_H / 2;
-    (x1 - 27, cy - 8, x1 - 11, cy + 8)
+    (x1 - 32, cy - 12, x1 - 8, cy + 12)
 }
 
 /// Classify a client-space point within the chrome region.

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [package]
 name = "rust-terminal"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "GDI-rendered terminal emulator for Windows PE (no DWM/D3D/XAML)"
@@ -34,6 +34,7 @@ version = "0.58"
 features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Graphics_Dwm",          # DwmSetWindowAttribute: remove the Win11 window border
     "Win32_System_Console",        # ConPTY: CreatePseudoConsole / ResizePseudoConsole / ClosePseudoConsole / HPCON
     "Win32_System_Threading",      # CreateProcessW, STARTUPINFOEXW, proc-thread attribute list
     "Win32_System_Pipes",          # CreatePipe

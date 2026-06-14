@@ -23,6 +23,7 @@ use std::cell::RefCell;
 
 use windows::core::{w, Result};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR};
 use windows::Win32::Graphics::Gdi::{
     CreateRoundRectRgn, GetMonitorInfoW, InvalidateRect, MonitorFromWindow, ScreenToClient,
     SetWindowRgn, HBRUSH, HRGN, MONITORINFO, MONITOR_DEFAULTTONEAREST,
@@ -42,8 +43,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, MINMAXINFO,
     MSG, SW_SHOW, WM_CHAR, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST,
-    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_PRINTCLIENT, WM_SIZE, WNDCLASSW, WS_MAXIMIZEBOX,
-    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PRINTCLIENT, WM_SIZE, WNDCLASSW,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
 
@@ -57,6 +58,8 @@ use render::{Chrome, Fonts};
 
 /// Window corner radius.
 const RADIUS: i32 = 12;
+/// WM_MOUSELEAVE (lives behind the Win32_UI_Controls feature; define it here).
+const WM_MOUSELEAVE: u32 = 0x02A3;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 fn next_id() -> u64 {
@@ -98,6 +101,7 @@ struct App {
     accent: u32,
     selecting: bool,
     hover: Option<CaptionBtn>,
+    hover_close: Option<usize>,
     ps_available: bool,
     cfg: Config,
 }
@@ -231,6 +235,18 @@ fn main() -> Result<()> {
             None,
         )?;
 
+        // Remove the Win11 window border (the focus-tinted edge). This is a DWM
+        // attribute: it takes effect on the desktop and is a harmless no-op in
+        // WinPE, which has no DWM and draws no such border. WM_NCPAINT below
+        // suppresses any classic frame border too.
+        let none = 0xFFFF_FFFEu32; // DWMWA_COLOR_NONE
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &none as *const u32 as *const core::ffi::c_void,
+            4,
+        );
+
         let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
@@ -249,6 +265,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // Remove the standard frame: client area covers the whole window.
                 LRESULT(0)
             }
+
+            // No non-client area to paint (we draw the whole window ourselves);
+            // suppress the classic frame border, which works even without DWM.
+            WM_NCPAINT => LRESULT(0),
 
             WM_CREATE => {
                 let cfg = Config::load();
@@ -278,6 +298,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             accent: cfg.accent,
                             selecting: false,
                             hover: None,
+                            hover_close: None,
                             ps_available,
                             cfg,
                         })
@@ -397,6 +418,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             accent: app.accent,
                             is_max,
                             hover: app.hover,
+                            hover_close: app.hover_close,
                         };
                         render::paint(hwnd, &app.cur().term, &app.fonts, &chrome);
                     }
@@ -418,6 +440,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             accent: app.accent,
                             is_max,
                             hover: app.hover,
+                            hover_close: app.hover_close,
                         };
                         render::render_to(hdc, rc.right, rc.bottom, &app.cur().term, &app.fonts, &chrome);
                     }
@@ -553,15 +576,57 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
 
             WM_MOUSEMOVE => {
-                if wparam.0 & 0x0001 != 0 {
-                    STATE.with_borrow_mut(|s| {
-                        if let Some(app) = s.as_mut() {
-                            if app.selecting {
-                                let (vline, col) = mouse_cell(app, lparam);
-                                app.cur_mut().term.grid.sel_update(vline, col);
-                            }
+                let x = (lparam.0 & 0xffff) as i16 as i32;
+                let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                let dragging = wparam.0 & 0x0001 != 0;
+                let changed = STATE.with_borrow_mut(|s| {
+                    let Some(app) = s.as_mut() else { return false };
+                    let mut ch = false;
+                    // Highlight a tab's close button when the cursor is over it.
+                    let hc = if y < CHROME_H {
+                        match chrome::hit(app.tabs.len(), rc.right, x, y) {
+                            Hit::Close(i) => Some(i),
+                            _ => None,
                         }
-                    });
+                    } else {
+                        None
+                    };
+                    if app.hover_close != hc {
+                        app.hover_close = hc;
+                        ch = true;
+                    }
+                    if app.selecting && dragging {
+                        let (vline, col) = mouse_cell(app, lparam);
+                        app.cur_mut().term.grid.sel_update(vline, col);
+                        ch = true;
+                    }
+                    ch
+                });
+                // Arm a leave notification so the close hover clears on exit.
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                let _ = TrackMouseEvent(&mut tme);
+                if changed {
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSELEAVE => {
+                let changed = STATE.with_borrow_mut(|s| match s.as_mut() {
+                    Some(app) if app.hover_close.is_some() => {
+                        app.hover_close = None;
+                        true
+                    }
+                    _ => false,
+                });
+                if changed {
                     let _ = InvalidateRect(hwnd, None, false);
                 }
                 LRESULT(0)

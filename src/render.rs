@@ -145,6 +145,8 @@ pub struct Chrome<'a> {
     pub accent: u32,
     pub is_max: bool,
     pub hover: Option<CaptionBtn>,
+    /// Index of the tab whose close button is hovered, if any.
+    pub hover_close: Option<usize>,
 }
 
 pub fn paint(hwnd: HWND, term: &Term, fonts: &Fonts, chrome: &Chrome) {
@@ -199,36 +201,54 @@ unsafe fn text(mem: HDC, x: i32, y: i32, clip: RECT, s: &str, color: u32) {
 unsafe fn draw_chrome(mem: HDC, width: i32, fonts: &Fonts, c: &Chrome) {
     fill(mem, 0, 0, width, CHROME_H, CHROME_BG);
     SetBkMode(mem, TRANSPARENT);
-    // Vertically center the (~18px) tab text in the taller bar.
-    let ty = (CHROME_H - 18) / 2;
+    let ty = (CHROME_H - 18) / 2; // vertically center the ~18px tab text
 
+    // Tab backgrounds + separators; accent bar on the active tab's top edge.
+    for i in 0..c.labels.len() {
+        let x0 = tab_x(i);
+        let x1 = x0 + TAB_W;
+        if i == c.active {
+            fill(mem, x0, 0, x1, CHROME_H, DEFAULT_BG);
+            fill(mem, x0, 0, x1, 2, c.accent);
+        } else if i > 0 {
+            fill(mem, x0, 8, x0 + 1, CHROME_H - 8, rgb(60, 60, 60));
+        }
+    }
+
+    // Tab labels.
     SelectObject(mem, fonts.ui);
     for (i, label) in c.labels.iter().enumerate() {
         let x0 = tab_x(i);
         let x1 = x0 + TAB_W;
-        let actv = i == c.active;
-        if actv {
-            fill(mem, x0, 0, x1, CHROME_H, DEFAULT_BG);
-            fill(mem, x0, 0, x1, 2, c.accent); // accent top bar
-        } else if i > 0 {
-            fill(mem, x0, 7, x0 + 1, CHROME_H - 7, rgb(60, 60, 60)); // separator
-        }
-        let label_clip = RECT { left: x0 + 12, top: 0, right: x1 - 32, bottom: CHROME_H };
-        let color = if actv { TAB_TEXT } else { TAB_TEXT_DIM };
+        let color = if i == c.active { TAB_TEXT } else { TAB_TEXT_DIM };
+        let label_clip = RECT { left: x0 + 12, top: 0, right: x1 - 36, bottom: CHROME_H };
         text(mem, x0 + 12, ty, label_clip, label, color);
-
-        let (cx0, _, cx1, _) = close_box(i);
-        let close_clip = RECT { left: cx0, top: 0, right: cx1 + 2, bottom: CHROME_H };
-        text(mem, cx0, ty, close_clip, "\u{00D7}", TAB_TEXT_DIM);
     }
-
+    // New-tab "+".
     let nx = newtab_x(c.labels.len());
     let plus_clip = RECT { left: nx, top: 0, right: nx + 26, bottom: CHROME_H };
     text(mem, nx + 8, ty - 1, plus_clip, "+", TAB_TEXT);
 
-    // Caption buttons (Segoe MDL2 Assets glyphs): minimize, maximize/restore, close.
-    // Each highlights on hover (red for close, lighter gray for min/max).
+    // Tab close buttons + caption buttons (Segoe MDL2 Assets glyphs).
     SelectObject(mem, fonts.glyph);
+    for i in 0..c.labels.len() {
+        let (bx0, by0, bx1, by1) = close_box(i);
+        let hovered = c.hover_close == Some(i);
+        let fg = if hovered {
+            fill(mem, bx0, by0, bx1, by1, HOVER_BG);
+            rgb(255, 255, 255)
+        } else if i == c.active {
+            TAB_TEXT
+        } else {
+            TAB_TEXT_DIM
+        };
+        let clip = RECT { left: bx0, top: 0, right: bx1, bottom: CHROME_H };
+        // E711 is a smaller close glyph that suits the tab close box.
+        text(mem, bx0 + 6, (CHROME_H - 12) / 2, clip, "\u{E711}", fg);
+    }
+
+    // Caption buttons: minimize, maximize/restore, close — hover-highlighted
+    // (red for close, lighter gray for min/max).
     let gy = (CHROME_H - 14) / 2;
     let (min_x, max_x, close_x) = caption_xs(width);
     let max_glyph = if c.is_max { "\u{E923}" } else { "\u{E922}" };
