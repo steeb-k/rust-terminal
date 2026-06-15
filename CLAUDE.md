@@ -68,9 +68,14 @@ When bumping the version, update **all** of these together:
 2. `pebakery/RustTerminal.script` — `Version=X.Y.Z.0` and `Date=`
 3. `D:\winrx-creator\Projects\winrx-creator\Applications\System Tools\RustTerminal.script` (separate repo) — same fields
 
-The two PEBakery scripts have **diverged** (repo copy uses `releases/latest/download/`;
-the winrx-creator copy resolves the latest tag via the GitHub API). Keep their
-`Version=`/`Date=` in sync, but don't expect them to be byte-identical.
+Both PEBakery scripts follow the shared winrx-creator/PhoenixPE convention
+(modeled on `Diskoria.script`) and are kept **byte-identical**: License header,
+`[Main]`/`[Variables]`, RunFromRam + AlwaysDownload + Shortcuts, standard icon
+buttons, a `DownloadProgram` that resolves the latest tag via the GitHub API
+(falling back to `%ProgramVersion%`), plus a RustTerminal-specific `[Config]`
+that writes the shell choice to the registry. When you change one, copy it to the
+other so they stay in sync (`Version=`, `Date=`, and the `%ProgramVersion%`
+fallback tag all move together).
 
 Then: commit → `git tag vX.Y.Z` → push `main` and the tag. Full checklist in
 [`docs/release.md`](docs/release.md).

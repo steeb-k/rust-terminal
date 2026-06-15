@@ -44,10 +44,11 @@ The optimized binary lands at `target/release/rust-terminal.exe`.
 ## Install (Windows PE)
 
 Use the PEBakery script in [`pebakery/RustTerminal.script`](pebakery/RustTerminal.script)
-with PhoenixPE / winrx-creator. It downloads the latest release binary
-automatically (or uses a local copy placed next to it) and writes configuration
-to the registry. The accent color is **not** set here — it's read from
-`HKLM\Software\StartPE\StartButtonColor` so it matches StartPE.
+with PhoenixPE / winrx-creator. It queries GitHub for the latest release,
+downloads `rust-terminal.exe`, caches it under Programs Cache for future builds,
+and writes the shell choice to the registry. The accent color is **not** set
+here — it's read from `HKLM\Software\StartPE\StartButtonColor` so it matches
+StartPE.
 
 ## Configuration
 

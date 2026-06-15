@@ -41,11 +41,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, LoadCursorW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION,
     HTCLIENT, HTCLOSE, HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
-    IDC_ARROW, LoadIconW, MA_ACTIVATE, MA_ACTIVATEANDEAT, MINMAXINFO, MSG, SW_SHOW, WM_CHAR,
+    IDC_ARROW, LoadIconW, MA_ACTIVATE, MA_ACTIVATEANDEAT, MINMAXINFO, MSG, SW_MAXIMIZE, SW_MINIMIZE,
+    SW_RESTORE, SW_SHOW, WM_CHAR,
     WM_CREATE,
     WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
-    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PRINTCLIENT, WM_SIZE, WNDCLASSW,
+    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT,
+    WM_PRINTCLIENT, WM_SIZE, WNDCLASSW,
     WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
@@ -711,6 +713,33 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 set_hover(hwnd, None);
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
+
+            // Handle caption-button clicks ourselves. Letting DefWindowProc do it
+            // makes it briefly draw the native (classic Win9x-looking) caption
+            // buttons over our own — intercepting the press suppresses that.
+            WM_NCLBUTTONDOWN => match wparam.0 as u32 {
+                HTMINBUTTON => {
+                    let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                    LRESULT(0)
+                }
+                HTMAXBUTTON => {
+                    let cmd = if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
+                    let _ = ShowWindow(hwnd, cmd);
+                    LRESULT(0)
+                }
+                HTCLOSE => {
+                    let _ = DestroyWindow(hwnd);
+                    LRESULT(0)
+                }
+                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            },
+
+            // Swallow double-clicks on the caption buttons too, so a fast second
+            // click can't slip through to DefWindowProc and flash a native button.
+            WM_NCLBUTTONDBLCLK => match wparam.0 as u32 {
+                HTMINBUTTON | HTMAXBUTTON | HTCLOSE => LRESULT(0),
+                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            },
 
             WM_ERASEBKGND => LRESULT(1),
 

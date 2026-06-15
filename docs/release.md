@@ -32,11 +32,10 @@ release **is** the distribution channel.
 
 ## Notes
 
-- **Always bump the PEBakery scripts, not just `Cargo.toml`.** The download URLs auto-track the latest release so the *binary* will be correct, but the `Version=`/`Date=` metadata shown to users goes stale if you forget.
-- **The two PEBakery scripts have diverged** and are not byte-identical:
-  - The in-repo `pebakery/RustTerminal.script` pulls `releases/latest/download/<binary>`.
-  - The winrx-creator copy queries the GitHub API for the latest tag, then downloads `releases/download/<tag>/<binary>`.
-  Keep their `Version=`/`Date=` in sync; don't try to merge their download logic.
-- The winrx-creator script lives in a **different repository**, so its bump is a separate commit there.
+- **Always bump the PEBakery scripts, not just `Cargo.toml`.** The download logic auto-tracks the latest release so the *binary* will be correct, but the `Version=`/`Date=` metadata and the `%ProgramVersion%` fallback tag go stale if you forget.
+- **The two PEBakery scripts are kept byte-identical**, both following the shared winrx-creator/PhoenixPE convention (modeled on `Diskoria.script`): they resolve the latest tag via the GitHub API and fall back to `%ProgramVersion%`. When you bump one, copy it to the other:
+  - in-repo: `pebakery/RustTerminal.script`
+  - winrx-creator: `…\System Tools\RustTerminal.script` (a **different repository** — its bump is a separate commit there)
+  Bump `Version=`, `Date=`, **and** `%ProgramVersion%="vX.Y.Z"` (the fallback download tag) in both.
 - `build.yml` builds sequentially (`max-parallel: 1`) so matrix jobs don't race to create the same release. ARM64 is stubbed out (TODO) — only `x86_64-pc-windows-msvc` ships today.
 - Versioning is informal semver: patch for fixes, minor for features (e.g. the 1px window border shipped as `v0.2.5`).

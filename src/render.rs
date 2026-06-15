@@ -7,11 +7,11 @@ use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Foundation::LPARAM;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateRoundRectRgn,
-    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, EnumFontFamiliesExW, ExtTextOutW, FillRect,
-    FrameRgn, GetDC, GetTextMetricsW, PatBlt, ReleaseDC, SelectObject, SetBkColor, SetBkMode,
-    SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DSTINVERT, ETO_CLIPPED,
-    ETO_OPAQUE, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT, LOGFONTW, OPAQUE, OUT_TT_PRECIS,
-    PAINTSTRUCT, SRCCOPY, TEXTMETRICW, TRANSPARENT,
+    CreateSolidBrush, DeleteDC, DeleteObject, Ellipse, EndPaint, EnumFontFamiliesExW, ExtTextOutW,
+    FillRect, FrameRgn, GetDC, GetStockObject, GetTextMetricsW, PatBlt, ReleaseDC, SelectObject,
+    SetBkColor, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
+    DSTINVERT, ETO_CLIPPED, ETO_OPAQUE, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT, LOGFONTW, NULL_PEN,
+    OPAQUE, OUT_TT_PRECIS, PAINTSTRUCT, SRCCOPY, TEXTMETRICW, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
@@ -31,6 +31,11 @@ const CLOSE_HOVER_BG: u32 = rgb(232, 17, 35);
 const BORDER_INACTIVE: u32 = rgb(90, 90, 90);
 /// Extra vertical space added per text row for comfortable line spacing.
 const LINE_GAP: i32 = 4;
+/// Active-tab accent indicator dot radius (px).
+const DOT_R: i32 = 4;
+/// Left inset for tab labels, reserving room for the indicator dot so labels
+/// align whether or not a given tab is active.
+const TAB_LABEL_X: i32 = 28;
 
 pub struct Fonts {
     pub normal: HFONT,
@@ -205,6 +210,18 @@ unsafe fn draw_border(mem: HDC, w: i32, h: i32, radius: i32, color: u32) {
     let _ = DeleteObject(rgn);
 }
 
+/// Fill a small circle of radius `r` centered at (cx, cy). Uses a null pen so
+/// there's no contrasting outline — just a solid accent dot.
+unsafe fn dot(mem: HDC, cx: i32, cy: i32, r: i32, color: u32) {
+    let b = CreateSolidBrush(COLORREF(color));
+    let old_b = SelectObject(mem, b);
+    let old_p = SelectObject(mem, GetStockObject(NULL_PEN));
+    let _ = Ellipse(mem, cx - r, cy - r, cx + r + 1, cy + r + 1);
+    SelectObject(mem, old_b);
+    SelectObject(mem, old_p);
+    let _ = DeleteObject(b);
+}
+
 unsafe fn fill(mem: HDC, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
     let r = RECT { left: x0, top: y0, right: x1, bottom: y1 };
     let b = CreateSolidBrush(COLORREF(color));
@@ -223,13 +240,14 @@ unsafe fn draw_chrome(mem: HDC, width: i32, fonts: &Fonts, c: &Chrome) {
     SetBkMode(mem, TRANSPARENT);
     let ty = (CHROME_H - 18) / 2; // vertically center the ~18px tab text
 
-    // Tab backgrounds + separators; accent bar on the active tab's top edge.
+    // Tab backgrounds + separators; an accent indicator dot to the left of the
+    // active tab's label marks it (no top accent bar — the dot is the indicator).
     for i in 0..c.labels.len() {
         let x0 = tab_x(i);
         let x1 = x0 + TAB_W;
         if i == c.active {
             fill(mem, x0, 0, x1, CHROME_H, DEFAULT_BG);
-            fill(mem, x0, 0, x1, 2, c.accent);
+            dot(mem, x0 + TAB_LABEL_X - 14, CHROME_H / 2, DOT_R, c.accent);
         } else if i > 0 {
             fill(mem, x0, 8, x0 + 1, CHROME_H - 8, rgb(60, 60, 60));
         }
@@ -241,8 +259,8 @@ unsafe fn draw_chrome(mem: HDC, width: i32, fonts: &Fonts, c: &Chrome) {
         let x0 = tab_x(i);
         let x1 = x0 + TAB_W;
         let color = if i == c.active { TAB_TEXT } else { TAB_TEXT_DIM };
-        let label_clip = RECT { left: x0 + 12, top: 0, right: x1 - 36, bottom: CHROME_H };
-        text(mem, x0 + 12, ty, label_clip, label, color);
+        let label_clip = RECT { left: x0 + TAB_LABEL_X, top: 0, right: x1 - 36, bottom: CHROME_H };
+        text(mem, x0 + TAB_LABEL_X, ty, label_clip, label, color);
     }
     // New-tab "+".
     let nx = newtab_x(c.labels.len());
