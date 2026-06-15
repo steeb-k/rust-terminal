@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "rust-terminal"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "unicode-width",
  "vte",

@@ -16,7 +16,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
 use crate::chrome::{
-    caption_xs, close_box, newtab_x, tab_x, CaptionBtn, BTN_W, CHROME_H, PAD_X, PAD_Y, RADIUS, TAB_W,
+    caption_xs, close_box, newtab_x, tab_x, CaptionBtn, BTN_W, CHROME_H, NEWTAB_W, PAD_X, PAD_Y,
+    RADIUS, TAB_W,
 };
 use crate::colors::{rgb, DEFAULT_BG, SEL_BG, SEL_FG};
 use crate::grid::{Cell, CursorStyle, FLAG_BOLD, FLAG_REVERSE, FLAG_UNDERLINE};
@@ -262,13 +263,13 @@ unsafe fn draw_chrome(mem: HDC, width: i32, fonts: &Fonts, c: &Chrome) {
         let label_clip = RECT { left: x0 + TAB_LABEL_X, top: 0, right: x1 - 36, bottom: CHROME_H };
         text(mem, x0 + TAB_LABEL_X, ty, label_clip, label, color);
     }
-    // New-tab "+".
-    let nx = newtab_x(c.labels.len());
-    let plus_clip = RECT { left: nx, top: 0, right: nx + 26, bottom: CHROME_H };
-    text(mem, nx + 8, ty - 1, plus_clip, "+", TAB_TEXT);
 
-    // Tab close buttons + caption buttons (Segoe MDL2 Assets glyphs).
+    // New-tab "+", tab close buttons, caption buttons (Segoe MDL2 Assets glyphs).
     SelectObject(mem, fonts.glyph);
+    // E710 ("Add") sized to match the tab close glyphs.
+    let nx = newtab_x(c.labels.len());
+    let plus_clip = RECT { left: nx, top: 0, right: nx + NEWTAB_W, bottom: CHROME_H };
+    text(mem, nx + 9, (CHROME_H - 12) / 2, plus_clip, "\u{E710}", TAB_TEXT);
     for i in 0..c.labels.len() {
         let (bx0, by0, bx1, by1) = close_box(i);
         let hovered = c.hover_close == Some(i);

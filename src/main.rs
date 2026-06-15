@@ -48,7 +48,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
     WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT,
     WM_PRINTCLIENT, WM_SIZE, WNDCLASSW,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
 };
 use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
 
@@ -231,7 +231,11 @@ fn main() -> Result<()> {
             Default::default(),
             class,
             w!("rust-terminal"),
-            WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
+            // Overlapped (not WS_POPUP): CW_USEDEFAULT only positions overlapped
+            // windows via the OS cascade — for a popup it collapses to (0,0), which
+            // is why the window used to open jammed in the top-left corner. The
+            // frame is still removed by our WM_NCCALCSIZE / WM_NCPAINT handling.
+            WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             960,
