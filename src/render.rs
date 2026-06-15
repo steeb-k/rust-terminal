@@ -6,17 +6,17 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Foundation::LPARAM;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateSolidBrush,
-    DeleteDC, DeleteObject, EndPaint, EnumFontFamiliesExW, ExtTextOutW, FillRect, GetDC,
-    GetTextMetricsW, PatBlt, ReleaseDC, SelectObject, SetBkColor, SetBkMode, SetTextColor,
-    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DSTINVERT, ETO_CLIPPED, ETO_OPAQUE,
-    FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT, LOGFONTW, OPAQUE, OUT_TT_PRECIS, PAINTSTRUCT, SRCCOPY,
-    TEXTMETRICW, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateRoundRectRgn,
+    CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, EnumFontFamiliesExW, ExtTextOutW, FillRect,
+    FrameRgn, GetDC, GetTextMetricsW, PatBlt, ReleaseDC, SelectObject, SetBkColor, SetBkMode,
+    SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DSTINVERT, ETO_CLIPPED,
+    ETO_OPAQUE, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT, LOGFONTW, OPAQUE, OUT_TT_PRECIS,
+    PAINTSTRUCT, SRCCOPY, TEXTMETRICW, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
 use crate::chrome::{
-    caption_xs, close_box, newtab_x, tab_x, CaptionBtn, BTN_W, CHROME_H, PAD_X, PAD_Y, TAB_W,
+    caption_xs, close_box, newtab_x, tab_x, CaptionBtn, BTN_W, CHROME_H, PAD_X, PAD_Y, RADIUS, TAB_W,
 };
 use crate::colors::{rgb, DEFAULT_BG, SEL_BG, SEL_FG};
 use crate::grid::{Cell, CursorStyle, FLAG_BOLD, FLAG_REVERSE, FLAG_UNDERLINE};
@@ -27,6 +27,8 @@ const TAB_TEXT: u32 = rgb(225, 225, 225);
 const TAB_TEXT_DIM: u32 = rgb(150, 150, 150);
 const HOVER_BG: u32 = rgb(60, 60, 62);
 const CLOSE_HOVER_BG: u32 = rgb(232, 17, 35);
+/// 1px window outline color when the window is not focused.
+const BORDER_INACTIVE: u32 = rgb(90, 90, 90);
 /// Extra vertical space added per text row for comfortable line spacing.
 const LINE_GAP: i32 = 4;
 
@@ -147,6 +149,8 @@ pub struct Chrome<'a> {
     pub hover: Option<CaptionBtn>,
     /// Index of the tab whose close button is hovered, if any.
     pub hover_close: Option<usize>,
+    /// Whether the window has focus (accent border vs. gray border).
+    pub focused: bool,
 }
 
 pub fn paint(hwnd: HWND, term: &Term, fonts: &Fonts, chrome: &Chrome) {
@@ -177,12 +181,28 @@ pub fn render_to(target: HDC, width: i32, height: i32, term: &Term, fonts: &Font
         draw_cells(mem, term, fonts, PAD_X, CHROME_H + PAD_Y);
         draw_cursor(mem, term, fonts, PAD_X, CHROME_H + PAD_Y, chrome.accent);
 
+        // 1px window outline, drawn last so it sits on top of chrome and content.
+        let border = if chrome.focused { chrome.accent } else { BORDER_INACTIVE };
+        let radius = if chrome.is_max { 0 } else { RADIUS };
+        draw_border(mem, width, height, radius, border);
+
         let _ = BitBlt(target, 0, 0, width, height, mem, 0, 0, SRCCOPY);
 
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(HBITMAP(bmp.0));
         let _ = DeleteDC(mem);
     }
+}
+
+/// Stroke a 1px outline just inside the window region, following the rounded
+/// corners (radius 0 = square, when maximized). The region matches the one set
+/// on the window via `SetWindowRgn`, so the border hugs the visible edge.
+unsafe fn draw_border(mem: HDC, w: i32, h: i32, radius: i32, color: u32) {
+    let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius);
+    let br = CreateSolidBrush(COLORREF(color));
+    let _ = FrameRgn(mem, rgn, br, 1, 1);
+    let _ = DeleteObject(br);
+    let _ = DeleteObject(rgn);
 }
 
 unsafe fn fill(mem: HDC, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {

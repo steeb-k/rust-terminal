@@ -15,6 +15,17 @@ pub const ACCENT_DEFAULT: u32 = 0x00E6_5AB4;
 
 const STARTPE_KEY: &str = r"Software\StartPE";
 const TERM_KEY: &str = r"Software\RustTerminal";
+const DWM_KEY: &str = r"Software\Microsoft\Windows\DWM";
+
+/// Read the standard Windows accent color (per-user, set by Settings > Colors).
+/// Stored as `AccentColor` under HKCU\...\DWM in 0xAABBGGRR; mask off the alpha
+/// to get a `COLORREF` (0x00BBGGRR). Returns `None` if unset (e.g. WinPE).
+fn windows_accent() -> Option<u32> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let dwm = hkcu.open_subkey(DWM_KEY).ok()?;
+    let v: u32 = dwm.get_value("AccentColor").ok()?;
+    Some(v & 0x00FF_FFFF)
+}
 
 pub struct Config {
     /// Shared accent (COLORREF 0x00BBGGRR) from StartPE.
@@ -44,12 +55,14 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Self {
         let mut c = Config::default();
+        let mut startpe_accent = false;
         for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
             let root = RegKey::predef(hive);
             // Shared accent from StartPE.
             if let Ok(k) = root.open_subkey(STARTPE_KEY) {
                 if let Ok(v) = k.get_value::<u32, _>("StartButtonColor") {
                     c.accent = v;
+                    startpe_accent = true;
                 }
             }
             // Terminal-specific settings.
@@ -70,6 +83,13 @@ impl Config {
                 if let Ok(v) = k.get_value::<u32, _>("Scrollback") {
                     c.scrollback = (v as usize).clamp(0, 100_000);
                 }
+            }
+        }
+        // No StartPE accent configured: prefer the standard Windows accent color,
+        // falling back to StartPE's purple default (already set) if that's unset.
+        if !startpe_accent {
+            if let Some(v) = windows_accent() {
+                c.accent = v;
             }
         }
         c

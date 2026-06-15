@@ -52,14 +52,12 @@ use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use chrome::{CaptionBtn, Hit, BORDER, CHROME_H, PAD_X, PAD_Y};
+use chrome::{CaptionBtn, Hit, BORDER, CHROME_H, PAD_X, PAD_Y, RADIUS};
 use config::Config;
 use conpty::{Pty, WM_PTY_DATA, WM_PTY_EXIT};
 use parser::Term;
 use render::{Chrome, Fonts};
 
-/// Window corner radius.
-const RADIUS: i32 = 12;
 /// WM_MOUSELEAVE (lives behind the Win32_UI_Controls feature; define it here).
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -104,6 +102,8 @@ struct App {
     selecting: bool,
     hover: Option<CaptionBtn>,
     hover_close: Option<usize>,
+    /// Whether the window currently has focus (drives the border color).
+    focused: bool,
     ps_available: bool,
     cfg: Config,
 }
@@ -278,7 +278,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // On focus change, stop DefWindowProc from repainting the (inactive)
             // non-client frame — that gray edge is exactly this. Passing -1 as
             // lParam suppresses the NC repaint while keeping the window "active".
-            WM_NCACTIVATE => DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)),
+            // Track focus so the self-drawn border tints accent / gray, and
+            // repaint to reflect it.
+            WM_NCACTIVATE => {
+                let active = wparam.0 != 0;
+                STATE.with_borrow_mut(|s| {
+                    if let Some(app) = s.as_mut() {
+                        app.focused = active;
+                    }
+                });
+                let _ = InvalidateRect(hwnd, None, false);
+                DefWindowProcW(hwnd, msg, wparam, LPARAM(-1))
+            }
 
             // The click that focuses an inactive window should NOT also register
             // in the terminal (it would start a selection and could pause output).
@@ -323,6 +334,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             selecting: false,
                             hover: None,
                             hover_close: None,
+                            focused: true,
                             ps_available,
                             cfg,
                         })
@@ -443,6 +455,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             is_max,
                             hover: app.hover,
                             hover_close: app.hover_close,
+                            focused: app.focused,
                         };
                         render::paint(hwnd, &app.cur().term, &app.fonts, &chrome);
                     }
@@ -465,6 +478,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             is_max,
                             hover: app.hover,
                             hover_close: app.hover_close,
+                            focused: app.focused,
                         };
                         render::render_to(hdc, rc.right, rc.bottom, &app.cur().term, &app.fonts, &chrome);
                     }

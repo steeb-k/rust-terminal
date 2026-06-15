@@ -15,6 +15,8 @@ pub const BTN_W: i32 = 46;
 /// Terminal content inset (padding) from the window edges, in pixels.
 pub const PAD_X: i32 = 8;
 pub const PAD_Y: i32 = 4;
+/// Window corner radius (rounded when not maximized).
+pub const RADIUS: i32 = 12;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum CaptionBtn {
