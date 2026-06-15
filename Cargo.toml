@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [package]
 name = "rust-terminal"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "GDI-rendered terminal emulator for Windows PE (no DWM/D3D/XAML)"
@@ -28,6 +28,9 @@ codegen-units = 1
 vte = "0.13"            # ANSI/VT state machine (alacritty's parser)
 unicode-width = "0.1"   # correct wide-character (CJK) cell layout
 winreg = "0.55"         # registry config + shared StartPE accent (matches start-pe)
+
+[build-dependencies]
+winresource = "0.1"     # embed the app icon (assets/rust-terminal.ico) into the exe
 
 [dependencies.windows]
 version = "0.58"

@@ -21,7 +21,7 @@ mod render;
 
 use std::cell::RefCell;
 
-use windows::core::{w, Result};
+use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR};
 use windows::Win32::Graphics::Gdi::{
@@ -41,7 +41,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, LoadCursorW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION,
     HTCLIENT, HTCLOSE, HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
-    IDC_ARROW, MA_ACTIVATE, MA_ACTIVATEANDEAT, MINMAXINFO, MSG, SW_SHOW, WM_CHAR, WM_CREATE,
+    IDC_ARROW, LoadIconW, MA_ACTIVATE, MA_ACTIVATEANDEAT, MINMAXINFO, MSG, SW_SHOW, WM_CHAR,
+    WM_CREATE,
     WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
     WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PRINTCLIENT, WM_SIZE, WNDCLASSW,
@@ -210,10 +211,13 @@ fn main() -> Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let hinstance: HINSTANCE = GetModuleHandleW(None)?.into();
         let class = w!("RustTerm_Main");
+        // App icon embedded by build.rs as resource id 101.
+        let hicon = LoadIconW(hinstance, PCWSTR(101 as *const u16)).unwrap_or_default();
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: hinstance,
+            hIcon: hicon,
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             hbrBackground: HBRUSH::default(),
             lpszClassName: class,
