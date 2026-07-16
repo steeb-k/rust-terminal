@@ -8,6 +8,7 @@ selection and clipboard.
 Each tab owns a `Pty`:
 
 - `Pty::spawn(id, shell, cols, rows, hwnd)` creates a pseudoconsole (`CreatePseudoConsole`), an input pipe, and the child process (`CreateProcessW` with a `STARTUPINFOEXW` carrying the `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`).
+- The child starts in the user's home profile (`USERPROFILE`), not wherever the app was launched from. `conpty::home_dir` returns `None` when that variable is missing or isn't a real directory, which means "inherit" — a bogus path would make `CreateProcessW` fail and lose the tab outright.
 - A **background reader thread** loops on `ReadFile` over the output pipe, appends bytes to a mutex-guarded buffer, and posts `WM_PTY_DATA` to `hwnd` to wake the UI thread. On EOF/child exit it posts `WM_PTY_EXIT` with the session `id`.
 - `pty.write(bytes)` writes to the input pipe; `pty.resize(cols, rows)` calls `ResizePseudoConsole`.
 - `take_pending()` swaps out the accumulated bytes for the UI thread to feed to the parser.

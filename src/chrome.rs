@@ -17,6 +17,11 @@ pub const PAD_X: i32 = 8;
 pub const PAD_Y: i32 = 4;
 /// Window corner radius (rounded when not maximized).
 pub const RADIUS: i32 = 12;
+/// New-tab dropdown menu geometry.
+pub const MENU_W: i32 = 200;
+pub const MENU_ITEM_H: i32 = 30;
+/// Vertical padding inside the menu, above the first and below the last item.
+pub const MENU_PAD: i32 = 4;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum CaptionBtn {
@@ -58,6 +63,26 @@ pub fn close_box(i: usize) -> (i32, i32, i32, i32) {
     let x1 = tab_x(i) + TAB_W;
     let cy = CHROME_H / 2;
     (x1 - 32, cy - 12, x1 - 8, cy + 12)
+}
+
+/// Rect (x0, y0, x1, y1) of the new-tab dropdown, hanging below the "+" button.
+/// Left-aligned with the button unless that would overflow the window, in which
+/// case it's pulled left to stay fully visible.
+pub fn menu_rect(ntabs: usize, nitems: usize, width: i32) -> (i32, i32, i32, i32) {
+    let x0 = newtab_x(ntabs).min((width - MENU_W - BORDER).max(BORDER));
+    let y0 = CHROME_H;
+    (x0, y0, x0 + MENU_W, y0 + nitems as i32 * MENU_ITEM_H + 2 * MENU_PAD)
+}
+
+/// Index of the dropdown item at (x, y), or `None` if the point is outside the
+/// menu (or inside its padding).
+pub fn menu_hit(ntabs: usize, nitems: usize, width: i32, x: i32, y: i32) -> Option<usize> {
+    let (x0, y0, x1, y1) = menu_rect(ntabs, nitems, width);
+    if x < x0 || x >= x1 || y < y0 + MENU_PAD || y >= y1 - MENU_PAD {
+        return None;
+    }
+    let i = ((y - y0 - MENU_PAD) / MENU_ITEM_H) as usize;
+    (i < nitems).then_some(i)
 }
 
 /// Classify a client-space point within the chrome region.

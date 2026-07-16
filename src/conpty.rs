@@ -12,7 +12,7 @@ use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use windows::core::{PWSTR, Result};
+use windows::core::{PCWSTR, PWSTR, Result};
 use windows::Win32::Foundation::{
     CloseHandle, DuplicateHandle, ERROR_BROKEN_PIPE, DUPLICATE_SAME_ACCESS, HANDLE, HWND, LPARAM,
     WPARAM,
@@ -40,6 +40,19 @@ const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x0002_0016;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// The user's home profile, used as every shell's starting directory so tabs
+/// open somewhere meaningful instead of inheriting wherever the app itself was
+/// launched from (in PE, the shell's own working directory).
+///
+/// `None` means "inherit": PE images vary, and a `USERPROFILE` that doesn't
+/// resolve to a real directory would make `CreateProcessW` fail outright, so an
+/// unusable value falls back rather than losing the tab.
+fn home_dir() -> Option<Vec<u16>> {
+    let p = std::env::var("USERPROFILE").ok()?;
+    let p = p.trim();
+    (!p.is_empty() && std::path::Path::new(p).is_dir()).then(|| wide(p))
 }
 
 pub struct Pty {
@@ -99,6 +112,8 @@ impl Pty {
             si.lpAttributeList = attr_list;
 
             let mut cmd = wide(cmdline);
+            let home = home_dir();
+            let cwd = home.as_ref().map_or(PCWSTR::null(), |h| PCWSTR(h.as_ptr()));
             let mut pi = PROCESS_INFORMATION::default();
             let res = CreateProcessW(
                 None,
@@ -108,7 +123,7 @@ impl Pty {
                 true,
                 EXTENDED_STARTUPINFO_PRESENT,
                 None,
-                None,
+                cwd,
                 &si.StartupInfo,
                 &mut pi,
             );

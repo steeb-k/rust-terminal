@@ -34,7 +34,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
-    TME_NONCLIENT, VIRTUAL_KEY, VK_CONTROL, VK_SHIFT, VK_TAB,
+    TME_NONCLIENT, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
@@ -89,6 +89,59 @@ fn powershell_available() -> bool {
     false
 }
 
+/// Does `System32\<rel>` exist? (PE images are trimmed, so nothing is assumed.)
+fn in_system32(rel: &str) -> bool {
+    match std::env::var("SystemRoot") {
+        Ok(root) => std::path::Path::new(&format!("{root}\\System32\\{rel}")).exists(),
+        Err(_) => false,
+    }
+}
+
+/// Is `exe` reachable on PATH? Used for shells that aren't part of Windows
+/// itself (PowerShell 7 installs outside System32 and is absent from most PEs).
+fn on_path(exe: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| {
+        std::env::split_paths(&p).any(|d| d.join(exe).is_file())
+    })
+}
+
+/// One entry in the new-tab dropdown.
+#[derive(Clone)]
+struct ShellChoice {
+    label: String,
+    cmd: String,
+}
+
+/// The shells to offer in the new-tab dropdown: whichever of the standard ones
+/// this image actually ships, plus the configured shell when it's a custom one.
+/// Never empty — cmd.exe is the last resort even if the probe came up empty.
+fn available_shells(cfg_shell: &str) -> Vec<ShellChoice> {
+    fn choice(label: &str, cmd: &str) -> ShellChoice {
+        ShellChoice { label: label.into(), cmd: cmd.into() }
+    }
+    let mut v: Vec<ShellChoice> = Vec::new();
+    if powershell_available() {
+        v.push(choice("PowerShell", "powershell.exe"));
+    }
+    if in_system32("cmd.exe") {
+        v.push(choice("Command Prompt", "cmd.exe"));
+    }
+    if on_path("pwsh.exe") {
+        v.push(choice("PowerShell 7", "pwsh.exe"));
+    }
+    // A custom registry `Shell` (anything that isn't one of the above) leads the
+    // list, so the configured default stays the first/most obvious choice.
+    let cfg = cfg_shell.trim();
+    let known = ["powershell.exe", "cmd.exe", "pwsh.exe"];
+    if !cfg.is_empty() && !known.contains(&cfg.to_lowercase().as_str()) {
+        v.insert(0, choice(&shell_label(cfg), cfg));
+    }
+    if v.is_empty() {
+        v.push(choice("Command Prompt", "cmd.exe"));
+    }
+    v
+}
+
 struct Session {
     pty: Pty,
     term: Term,
@@ -107,6 +160,12 @@ struct App {
     /// Whether the window currently has focus (drives the border color).
     focused: bool,
     ps_available: bool,
+    /// Shells offered by the new-tab dropdown.
+    shells: Vec<ShellChoice>,
+    /// Whether the new-tab dropdown is showing.
+    menu_open: bool,
+    /// Index of the hovered dropdown item, if any.
+    menu_hover: Option<usize>,
     cfg: Config,
 }
 
@@ -131,6 +190,17 @@ impl App {
             })
             .collect()
     }
+    fn shell_labels(&self) -> Vec<String> {
+        self.shells.iter().map(|s| s.label.clone()).collect()
+    }
+}
+
+/// Close the new-tab dropdown if it's open; returns whether anything changed.
+fn close_menu(app: &mut App) -> bool {
+    let was = app.menu_open;
+    app.menu_open = false;
+    app.menu_hover = None;
+    was
 }
 
 thread_local! {
@@ -291,6 +361,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 STATE.with_borrow_mut(|s| {
                     if let Some(app) = s.as_mut() {
                         app.focused = active;
+                        // A dropdown left open behind a focus change is a ghost.
+                        if !active {
+                            close_menu(app);
+                        }
                     }
                 });
                 let _ = InvalidateRect(hwnd, None, false);
@@ -316,6 +390,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let fonts = Fonts::new(cfg.font_px, &cfg.font_face);
                 let (cols, rows) = term_grid_size(hwnd, &fonts);
                 let ps_available = powershell_available();
+                let shell_choices = available_shells(&cfg.shell);
 
                 // First-launch tabs: if PowerShell is present, open both shells so
                 // the user can switch (Ctrl+Tab); otherwise just Command Prompt.
@@ -342,6 +417,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             hover_close: None,
                             focused: true,
                             ps_available,
+                            shells: shell_choices,
+                            menu_open: false,
+                            menu_hover: None,
                             cfg,
                         })
                     });
@@ -454,6 +532,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 STATE.with_borrow(|s| {
                     if let Some(app) = s.as_ref() {
                         let labels = app.labels();
+                        let menu_labels = app.shell_labels();
                         let chrome = Chrome {
                             labels: &labels,
                             active: app.active,
@@ -462,6 +541,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             hover: app.hover,
                             hover_close: app.hover_close,
                             focused: app.focused,
+                            menu: app.menu_open.then_some(menu_labels.as_slice()),
+                            menu_hover: app.menu_hover,
                         };
                         render::paint(hwnd, &app.cur().term, &app.fonts, &chrome);
                     }
@@ -477,6 +558,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         let mut rc = RECT::default();
                         let _ = GetClientRect(hwnd, &mut rc);
                         let labels = app.labels();
+                        let menu_labels = app.shell_labels();
                         let chrome = Chrome {
                             labels: &labels,
                             active: app.active,
@@ -485,6 +567,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             hover: app.hover,
                             hover_close: app.hover_close,
                             focused: app.focused,
+                            menu: app.menu_open.then_some(menu_labels.as_slice()),
+                            menu_hover: app.menu_hover,
                         };
                         render::render_to(hdc, rc.right, rc.bottom, &app.cur().term, &app.fonts, &chrome);
                     }
@@ -495,6 +579,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_SIZE => {
                 STATE.with_borrow_mut(|s| {
                     if let Some(app) = s.as_mut() {
+                        // The dropdown is positioned off the chrome, which moves.
+                        close_menu(app);
                         let (cols, rows) = term_grid_size(hwnd, &app.fonts);
                         for sess in app.tabs.iter_mut() {
                             sess.term.grid.resize(cols as usize, rows as usize);
@@ -546,6 +632,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wparam.0 as u16);
+                // Any keystroke dismisses the new-tab dropdown; Escape does only
+                // that (it must not also reach the shell).
+                if STATE.with_borrow_mut(|s| s.as_mut().map(close_menu).unwrap_or(false)) {
+                    let _ = InvalidateRect(hwnd, None, false);
+                    if vk == VK_ESCAPE {
+                        return LRESULT(0);
+                    }
+                }
                 let ctrl = key_down(VK_CONTROL);
                 let shift = key_down(VK_SHIFT);
                 if ctrl && shift {
@@ -595,6 +689,27 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let mut rc = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rc);
                 let ntabs = STATE.with_borrow(|s| s.as_ref().map(|a| a.tabs.len()).unwrap_or(0));
+
+                // An open dropdown swallows the click: on an item it opens that
+                // shell, anywhere else (including the "+" again) it dismisses.
+                let nshells = STATE
+                    .with_borrow(|s| s.as_ref().filter(|a| a.menu_open).map(|a| a.shells.len()));
+                if let Some(n) = nshells {
+                    let pick = chrome::menu_hit(ntabs, n, rc.right, x, y);
+                    let cmd = STATE.with_borrow_mut(|s| {
+                        let app = s.as_mut()?;
+                        close_menu(app);
+                        pick.map(|i| app.shells[i].cmd.clone())
+                    });
+                    match cmd {
+                        Some(cmd) => new_tab_with(hwnd, &cmd),
+                        None => {
+                            let _ = InvalidateRect(hwnd, None, false);
+                        }
+                    }
+                    return LRESULT(0);
+                }
+
                 match chrome::hit(ntabs, rc.right, x, y) {
                     Hit::Tab(i) => {
                         STATE.with_borrow_mut(|s| {
@@ -605,7 +720,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         let _ = InvalidateRect(hwnd, None, false);
                     }
                     Hit::Close(i) => close_tab(hwnd, Some(i)),
-                    Hit::NewTab => new_tab(hwnd),
+                    Hit::NewTab => {
+                        // One shell available: nothing to choose between.
+                        let single = STATE
+                            .with_borrow(|s| s.as_ref().map(|a| a.shells.len() <= 1).unwrap_or(true));
+                        if single {
+                            new_tab(hwnd);
+                        } else {
+                            STATE.with_borrow_mut(|s| {
+                                if let Some(app) = s.as_mut() {
+                                    app.menu_open = true;
+                                    app.menu_hover = None;
+                                }
+                            });
+                            let _ = InvalidateRect(hwnd, None, false);
+                        }
+                    }
                     Hit::Terminal => {
                         SetCapture(hwnd);
                         STATE.with_borrow_mut(|s| {
@@ -643,6 +773,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     };
                     if app.hover_close != hc {
                         app.hover_close = hc;
+                        ch = true;
+                    }
+                    // Highlight the dropdown item under the cursor.
+                    let mh = app
+                        .menu_open
+                        .then(|| chrome::menu_hit(app.tabs.len(), app.shells.len(), rc.right, x, y))
+                        .flatten();
+                    if app.menu_hover != mh {
+                        app.menu_hover = mh;
                         ch = true;
                     }
                     if app.selecting && dragging {
@@ -801,24 +940,37 @@ fn switch_tab(hwnd: HWND, dir: isize) {
     }
 }
 
+/// Open a tab running the configured default shell (Ctrl+T, and the "+" button
+/// when there's only one shell to choose from).
 fn new_tab(hwnd: HWND) {
-    let params = STATE.with_borrow(|s| {
+    let shell = STATE.with_borrow(|s| {
         s.as_ref().map(|a| {
-            let (cols, rows) = term_grid_size(hwnd, &a.fonts);
             // Fall back to cmd if the configured shell is PowerShell but absent.
             let want_ps = a.cfg.shell.to_lowercase().contains("powershell");
-            let shell = if want_ps && !a.ps_available {
+            if want_ps && !a.ps_available {
                 "cmd.exe".to_string()
             } else {
                 a.cfg.shell.clone()
-            };
-            (cols, rows, shell, a.cfg.scrollback)
+            }
         })
     });
-    let Some((cols, rows, shell, scrollback)) = params else {
+    if let Some(shell) = shell {
+        new_tab_with(hwnd, &shell);
+    }
+}
+
+/// Open a tab running `shell` (a pick from the new-tab dropdown).
+fn new_tab_with(hwnd: HWND, shell: &str) {
+    let params = STATE.with_borrow(|s| {
+        s.as_ref().map(|a| {
+            let (cols, rows) = term_grid_size(hwnd, &a.fonts);
+            (cols, rows, a.cfg.scrollback)
+        })
+    });
+    let Some((cols, rows, scrollback)) = params else {
         return;
     };
-    if let Some(sess) = spawn_session(hwnd, &shell, cols, rows, scrollback) {
+    if let Some(sess) = spawn_session(hwnd, shell, cols, rows, scrollback) {
         STATE.with_borrow_mut(|s| {
             if let Some(app) = s.as_mut() {
                 app.tabs.push(sess);

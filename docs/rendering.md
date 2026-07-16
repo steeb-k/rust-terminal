@@ -28,7 +28,8 @@ order into the memory DC:
 2. `draw_chrome` — tab strip / titlebar.
 3. `draw_cells` — the terminal grid.
 4. `draw_cursor`.
-5. `draw_border` — the 1px window outline, **last**, so it sits on top.
+5. `draw_menu` — the new-tab dropdown, when open; after the grid because it overlays it.
+6. `draw_border` — the 1px window outline, **last**, so it sits on top.
 
 `WM_PAINT` calls `render::paint` (which `BeginPaint`s and forwards to `render_to`);
 `WM_PRINTCLIENT` forwards directly so thumbnails/snapshots render correctly.
@@ -39,12 +40,30 @@ order into the memory DC:
 `RADIUS`, padding, etc.) and two pure functions:
 
 - `hit(ntabs, width, x, y) -> Hit` — classifies a client point (tab, close box, new-tab `+`, caption button, drag region, or terminal).
+- `menu_rect` / `menu_hit` — geometry and item hit-testing for the new-tab dropdown.
 - `caption_xs`, `tab_x`, `close_box`, … — geometry helpers.
 
 `wndproc` reuses `hit` in `WM_NCHITTEST` (mapping `Hit::Drag → HTCAPTION`,
 caption buttons → `HTMINBUTTON`/`HTMAXBUTTON`/`HTCLOSE`) and in mouse handlers,
 so drawing and input always agree on where things are. Caption/close glyphs come
 from the **Segoe MDL2 Assets** font; tab labels use **Segoe UI**.
+
+## New-tab dropdown
+
+Clicking `+` opens a list of the shells this image actually has (`main::available_shells`
+probes for them at startup). It is **not** a popup window or a `TrackPopupMenu` —
+it's painted into the same window as an overlay over the terminal area, so it
+inherits the dark chrome instead of the OS's light menu styling, and needs
+nothing from a compositor.
+
+Because it lives inside the window, dismissal is explicit: `close_menu` runs on a
+click anywhere off an item, any keystroke (Escape does *only* that), `WM_SIZE`
+(the geometry hangs off the chrome, which moves), and focus loss via
+`WM_NCACTIVATE`. While it's open, `WM_LBUTTONDOWN` swallows the click before the
+normal `chrome::hit` dispatch — otherwise a click meant to dismiss the menu would
+also start a selection in the terminal underneath.
+
+With only one shell available there's nothing to choose, so `+` opens a tab directly.
 
 ## Rounded corners and the border
 

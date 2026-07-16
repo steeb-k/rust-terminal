@@ -12,6 +12,7 @@ shared StartPE accent color automatically.
 - **Runs on bare WinPE** — pure GDI rendering, no DWM/D3D/XAML required.
 - **Real ConPTY sessions** — full PowerShell / Command Prompt support, including Tab completion and ANSI/VT sequences (parsed with Alacritty's `vte`).
 - **Tabs** — multiple shells in one window; `Ctrl+T` new, `Ctrl+W` close, `Ctrl+Tab` / `Ctrl+Shift+Tab` to switch.
+- **Pick your shell** — the tab strip's `+` drops down the shells this image actually has (PowerShell, Command Prompt, PowerShell 7, or a custom configured one). Tabs open in your home profile.
 - **Self-drawn dark chrome** — borderless window with a custom tab strip, drag, resize, minimize/maximize/close, and rounded corners.
 - **Accent-aware 1px border** — tinted with the StartPE / Windows accent color when focused, gray when not.
 - **Selection & clipboard** — mouse selection, `Ctrl+Shift+C` copy, `Ctrl+Shift+V` paste (with bracketed-paste support).
@@ -22,7 +23,7 @@ shared StartPE accent color automatically.
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+T` | New tab |
+| `Ctrl+T` | New tab (default shell — the `+` button offers the full list) |
 | `Ctrl+W` | Close tab |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 | `Ctrl+Shift+C` | Copy selection |

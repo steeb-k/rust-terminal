@@ -36,14 +36,14 @@ Author=steeb-k
 Level=5
 Selected=True
 Mandatory=False
-Version=0.2.7.0
-Date=2026-06-15
+Version=0.3.0.0
+Date=2026-07-16
 
 [Variables]
 %ProgramFolder%="RustTerminal"
 %ProgramExe%="rust-terminal.exe"
 // Fallback tag if GitHub API metadata cannot be read (must match a published release tag).
-%ProgramVersion%="v0.2.7"
+%ProgramVersion%="v0.3.0"
 
 [Process]
 Echo,"Processing %ScriptTitle%..."

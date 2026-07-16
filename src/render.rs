@@ -16,8 +16,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
 use crate::chrome::{
-    caption_xs, close_box, newtab_x, tab_x, CaptionBtn, BTN_W, CHROME_H, NEWTAB_W, PAD_X, PAD_Y,
-    RADIUS, TAB_W,
+    caption_xs, close_box, menu_rect, newtab_x, tab_x, CaptionBtn, BTN_W, CHROME_H, MENU_ITEM_H,
+    MENU_PAD, NEWTAB_W, PAD_X, PAD_Y, RADIUS, TAB_W,
 };
 use crate::colors::{rgb, DEFAULT_BG, SEL_BG, SEL_FG};
 use crate::grid::{Cell, CursorStyle, FLAG_BOLD, FLAG_REVERSE, FLAG_UNDERLINE};
@@ -28,6 +28,9 @@ const TAB_TEXT: u32 = rgb(225, 225, 225);
 const TAB_TEXT_DIM: u32 = rgb(150, 150, 150);
 const HOVER_BG: u32 = rgb(60, 60, 62);
 const CLOSE_HOVER_BG: u32 = rgb(232, 17, 35);
+/// New-tab dropdown surface + its 1px outline.
+const MENU_BG: u32 = rgb(43, 43, 45);
+const MENU_BORDER: u32 = rgb(72, 72, 74);
 /// 1px window outline color when the window is not focused.
 const BORDER_INACTIVE: u32 = rgb(90, 90, 90);
 /// Extra vertical space added per text row for comfortable line spacing.
@@ -157,6 +160,10 @@ pub struct Chrome<'a> {
     pub hover_close: Option<usize>,
     /// Whether the window has focus (accent border vs. gray border).
     pub focused: bool,
+    /// Shell labels offered by the new-tab dropdown, when it is open.
+    pub menu: Option<&'a [String]>,
+    /// Index of the hovered dropdown item, if any.
+    pub menu_hover: Option<usize>,
 }
 
 pub fn paint(hwnd: HWND, term: &Term, fonts: &Fonts, chrome: &Chrome) {
@@ -186,6 +193,11 @@ pub fn render_to(target: HDC, width: i32, height: i32, term: &Term, fonts: &Font
         SetBkMode(mem, OPAQUE);
         draw_cells(mem, term, fonts, PAD_X, CHROME_H + PAD_Y);
         draw_cursor(mem, term, fonts, PAD_X, CHROME_H + PAD_Y, chrome.accent);
+
+        // The new-tab dropdown overlays the terminal, so it paints after the grid.
+        if let Some(items) = chrome.menu {
+            draw_menu(mem, width, fonts, chrome, items);
+        }
 
         // 1px window outline, drawn last so it sits on top of chrome and content.
         let border = if chrome.focused { chrome.accent } else { BORDER_INACTIVE };
@@ -307,6 +319,31 @@ unsafe fn draw_chrome(mem: HDC, width: i32, fonts: &Fonts, c: &Chrome) {
         };
         let clip = RECT { left: bx, top: 0, right: bx + BTN_W, bottom: CHROME_H };
         text(mem, bx + 16, gy, clip, glyph, fg);
+    }
+}
+
+/// The new-tab dropdown: a dark panel of shell choices hanging below the "+".
+/// Drawn into the same window (WinPE has no compositor to hang a popup off).
+unsafe fn draw_menu(mem: HDC, width: i32, fonts: &Fonts, c: &Chrome, items: &[String]) {
+    let (x0, y0, x1, y1) = menu_rect(c.labels.len(), items.len(), width);
+    fill(mem, x0, y0, x1, y1, MENU_BG);
+    // 1px outline, drawn as four edges (the panel is square-cornered).
+    fill(mem, x0, y0, x1, y0 + 1, MENU_BORDER);
+    fill(mem, x0, y1 - 1, x1, y1, MENU_BORDER);
+    fill(mem, x0, y0, x0 + 1, y1, MENU_BORDER);
+    fill(mem, x1 - 1, y0, x1, y1, MENU_BORDER);
+
+    SetBkMode(mem, TRANSPARENT);
+    SelectObject(mem, fonts.ui);
+    for (i, label) in items.iter().enumerate() {
+        let iy = y0 + MENU_PAD + i as i32 * MENU_ITEM_H;
+        let hovered = c.menu_hover == Some(i);
+        if hovered {
+            fill(mem, x0 + 1, iy, x1 - 1, iy + MENU_ITEM_H, HOVER_BG);
+        }
+        let fg = if hovered { rgb(255, 255, 255) } else { TAB_TEXT };
+        let clip = RECT { left: x0 + 12, top: iy, right: x1 - 8, bottom: iy + MENU_ITEM_H };
+        text(mem, x0 + 12, iy + (MENU_ITEM_H - 18) / 2, clip, label, fg);
     }
 }
 
